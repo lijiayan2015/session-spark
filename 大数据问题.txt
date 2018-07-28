@@ -1,0 +1,190 @@
+﻿
+数据采集：flume采集数据，存储到hdfs，mr进行数据清洗，然后，用hive进行表映射
+log日志字段：
+userid，SessionID，
+pageID，action_time,
+click_category_id,click_category_id,
+click_product_id,order_category_ids,
+order_product_ids,pay_category_ids,
+pay_product_ids,city_id
+
+用户信息字段：
+user_id，username，age，professional，city，sex
+
+大数据Session项目：
+   模块一：对用户访问的Session按条件进行分析(条件：开始日期，结束日期,年龄，性别，城市，职业等)
+   模块一实现：
+		1.获取Session日志的RDD
+		    DataFrame df = sqlContext.sql("select * from user_visit_action where date>开始日志 and date<结束日期")
+		    df.toJavaRDD -->JavaRDD<Row>
+		    JavaRDD(Row)通过MaptoPair--->JavaRDD<sessionID,Row>
+		    按照sessionID
+		    JavaRDD<sessionID,Iterable<Row>> -->avaRDD<sessionID,Row>.groupByKey()
+		2.JavaRDD<sessionID,Iterable<Row>>通过MaptoPair转化成javaRDD<userID,actionInfo>
+			从Iterable<Row>当前SessionID对应的
+			得到用户ID，
+			Session开始时间，Session结束时间-->访问时长
+			访问步长
+			搜索关键字，点击品类的IDs
+			将得到的这些数据按照keyvalue的方式拼接成一份整的字符串,每个keyvalue对之间用|连接
+			
+		3. DataFrame df = sqlContext.sql("select * from user_info")
+		df.toJavaRDD-->JavaRDD(UserInfoRow)--maptoPair--->JavaRDD<userId,UserInfoString>
+		UserInfoString中包含用户的年龄，职业，城市，性别，按照key=value方式拼接，各个键值对之前用|连接
+		4. javaRDD<userID,actionInfo>.join(JavaRDD<userId,UserInfoString>).maptoPair--->
+		JavaRDD<sessionID,actionInfo+UserInfoString>
+			这个SessionId对应的数据包含：
+			1.访问时长，访问步长，搜索关键字s，点击品类的IDs等
+		5. 获取过滤的条件：
+		   开始年龄，结束年龄，专业，城市，性别，搜索关键字，品类
+		并将过滤数据以key-value的方式组织，keyvalue对之间用|进行连接
+		6. JavaRDD<sessionID,actionInfo+UserInfoString>.filter 根据过滤的条件进行过滤：
+		过滤工具类实现原理：
+			获取拼接字符串的字段值工具方法:根据|拆分得到keyvalue对，再根据key字段得到value
+		7. 自定义累加器，对过滤后的JavaRDD<sessionID,actionInfo+UserInfoString>进行Session数量，访问时长，访问步长进行累加
+		自定义累加器实现：
+			（1）实现AccumulatorParam接口，从写初始化方法zero，在初始化中对访问时长，访问步长的各个key按照
+				“key1=0|”+
+				“key2=0+”...的方式进行组合
+	    8. 对过滤后的数据进行Session数量，各个时长，步长进行累加统计：
+		
+		9.将过滤后得到的<sessionID,actionInfo+UserInfoString>与<SessionId,actionRow>进行join得到过滤后的<SessionId，actionRow>
+			
+		10.由于上面的一系列转化都是transform算子，并没有action算子，所以要想累加器得到值，必须触发一个action的算子
+		11.触发action的算子（rdd.count）,然后将累加器中值（Session数量，Session时长段的（个数），Session步长的Session个数）计算占比，保存到mysql中
+		    
+    
+	模块二：按时间比例随机抽取session。		
+	模块二实现：		
+		1.将过滤后的<sessionID,actionInfo+UserInfoString>通过MaptoPair--->转化成<dateHour,actionInfo+UserInfoString>数据
+		2.<dateHour,actionInfo+UserInfoString>.countBykey() ---> Map<dateHour,Object(object其实就是dateHour对应的Session数量)>
+		3.将Map<dateHour,Object> ---> Map<date,Map<hour,count>>存储一天中每个小时段的Session数
+		4.实现按时间比例抽取算法:
+			比如要随机抽取的Session数是100，则按100 / Map<date,Map<hour,count>>.size()得到每天应该应该抽取的Session数量extranctNumber
+			Map<String, Map<String, List<Integer>>> dateHourExtranctMap = new HashMap<>(); 用来存储一天中每个小时应该抽取的在
+			通过遍历Map<date,Map<hour,count>>得到一天的总的Session数量
+			通过 (一个小时的Session数量/一天的Seesion数量*一天应该抽取的Session数量)得到当前小时应该抽取的Session数量（需要判断当前小时应该抽取的Session数量是否大于当前小时的Session数量，
+			    如果大于，则取当前小时的Session数量）
+			
+			通过
+			for (int i = 0; i < hourExtractNumber; i++) {//hourExtractNumber当前小时应该抽取的Session数量
+                int extraxtIndex = random.nextInt(((int) count));
+				//如果当前索引中已经包含该下标，则继续随机，直到不包含为止
+                while (extractIndexList.contains(extraxtIndex)) {
+                    //重复的话随机生成随机数
+                    extraxtIndex = random.nextInt((int) count);
+                }
+
+                extractIndexList.add(extraxtIndex);//extractIndexList用来存储应该抽取的Session的索引
+            }
+			得到当前小时应该抽取的Session的索引
+		5.将一天中某个小时应该抽取的索引的dateHourExtranctMap中的list转化成占容更小的IntList Map<String, Map<String, IntList>> fastUtilDateHourExtractMap
+		  并fastUtilDateHourExtractMap广播出去，
+		6.<dateHour,actionInfo+UserInfoString>.groupBykey()得到一天中某个小时的Sessions
+		7.一天中某个小时的Sessions.flatMapToPair--->（SessionID，SessionId），在内部：
+			获取当前天和当前小时，然后获取广播中的fastUtilDateHourExtractMa
+			通过当前天和当前小时获取应该抽取的Session索引，
+			通过：
+			int index = 0;
+			while(当前小时的Sessions.it.hasNext){
+				判断当前index是否在抽取索引的下标中，所过在，获取当前的Session信息，
+				将获取到的Session信息中的SessionId，开始时间，点击品类IDs，搜索关键字s存储到mysql表session_random_extract
+			}
+			
+		8.将（SessionID，SessionId）与 过滤后的<Sessionid，actionRow>进行join得到抽取的Sessionid明细信息，将这些明细信息写入到数据库表session_detail。
+			
+			
+	模块三：获取按照点击，下单，支付次数排名的品类的top10
+	模块三实现：
+		1.用sessionId2detailRDD（过滤后得到Session明细数据）进行maptopair---->JavaRDD<品类ID，品类ID>，
+		  在内部，每个SessionID对应的row明细数据获取点击的品类id，下单的品类ids，支付的品类ids，
+		  将上面得到的各种事件的品类id们放到list集合中返回。
+		2.1中得到的是点击过，下单过，支付过的品类ID，这里需要去重。	
+		3.计算各品类的点击次数：
+			SessionId2actionRow.filter(点击品类不为空的Sessionid2actionRow)
+			将过滤出来的数据生成（categoryid，1）的tuple
+			将生成的JavaRDD<categoryid,1>进行reduceByKey聚合得到各个categoryid的点击次数
+		4.同理计算各个品类的下单次数
+		5.同理计算各个品类的支付次数
+		6.用2中得到的点击过，下单过，支付过的品类ID分别与3,4,5中得到的<品类ID,count>进行leftJoin：
+		    注意，这里不能用join，因为join导致2中的品类ID只剩下点击过，或下单过的品类ID
+			（1）与点击次数的categoryID进行leftJoin，然后调用maptoPair，将categoryID得到每个categoryid对应的点击次数
+			     对于没有点击次数的categoryId，将点击次数置为0
+			     最后按照categoryId=当前的categoryID|clickCount=(当前categoryid的点击次数)
+			     最后结果为tempMapRDD<categoryid,”categoryid=当前品类id|clickcount=当前品类的点击次数“>
+		    （2）将tempMapRDD与下单次数的categoryID进行leftJoin，然后调用mapToPair，将categoryId得到的每个categoryid对应的下单次数
+			     对于没有下单次数的categoryId,将下单次数置为0
+				 最后在（1）的基础上拼接|orderCount=(当前categoryid的下单次数)
+		 	     最后结果为tempMapRDD<categoryid,”categoryid=当前品类id|clickcount=当前品类的点击次数|orderCount=当前品类对应的下单次数“>
+		    （3）同（1）（2），最后得到的是
+			     tempMapRDD<categoryid,”categoryid=当前品类id|clickcount=当前品类的点击次数|orderCount=当前品类对应的下单次数|payCount=当前品类的下单次数“>
+		7.自定义排序品类：CategorySortKey 实现Ordered接口，以及序列化接口
+            其中属性包含（点击次数，下单次数，支付次数）		
+	        重写其中的compare方法，先比较点击次数，如果点击次数相同，再比较下单次数，如果下单次数也相同，最后比较支付次数
+			重写其中的$less(小于)，$greater（大于），$less$eq（小于等于），$greater$eq（大于等于），
+		8.将6中得到的tempMapRDD调用maptopair,在里面通过字符串工具类获取到每个categoryid对应的点击次数，下单次数，支付次数，然后生成CategorySortKey对象
+		  最后返回<CategorySortKey,分别含有品类id，点击次数，下单次数，支付次数的拼接字符串>
+		9.将8中得到的RDD调用sortByKey(false:表示降序)，然后去take10，得到前10个热门品类，将这前10个热门品类写到mysql数据库的top10_category表中。  
+	
+	模块四：获取top10热门品类中的每个品类取top10活跃session。
+	模块四的实现：
+	    1.遍历模块三种最后得到的top10数据，得到每一个品类的品类id，并将生成一个一个的tuple<categoryid,categoryid>，并放到list集合中
+		2.将上面的集合转化成JAVARDD
+		3.将过滤后的<Sessionid，Row>进行groupbykey。
+		4.将groupbykey后的数据进行flatmaptopair，
+			在里面计算出每个categoryId对应的点击次数，也即SessionId对应的用户对这个category的点击次数
+			最后返回每个categoryid对应的点击次数，同时还包含当前categoryid来自哪个Seesion，格式为<categoryid,"sessionID,clickCount">
+		5.将2中得到的RDD与4中RDD进行join操作，得到的是top10热门品类中，categoryID对应的各个Session对当前category的点击次数
+		6.将join后的数据通过mapToPair转化成<categoryid,"sessionID,count">
+		7.<categoryid,"sessionID,count"> 进行groupbykey---->得到的数据是<categoryid,Iterable<sessionID,count>>
+		8.将<categoryid,Iterable<sessionID,count>>调用flatMapToPair，在里面计算出每个category里面，点击次数前10的Session，以及点击次数
+			topN算法：
+			Iterator<String> it = Iterable<sessionID,count>.iterator()
+			String[] top10 = new String[10]
+			while(it.hasNext){
+				sessionIDCount = it.next();
+				long count = it.split(",")[1]
+				for(int i = 0;i<10;i++){
+					if(top10[i]==null){
+						top10[i] = sessionIDCount;
+						break;
+					}else{
+						long _count = top10[i].split(",")[1];
+						if(count>_count){
+							for(int j = 9;j>i;j--){
+								top10[j] = top10[j-1]
+							}
+							top10[i] = sessionIDCount;
+							break;
+						}
+					}
+						
+				}
+			}
+			
+			通过上面算法，得到当前categoryid对应的clickcount前10的SessionId以及count
+			遍历这10个，然后存储到mysql的top10_category_session
+			同时，将这10个SessionID取出来，放到集合中，返回
+        9.在8中得到的结果是每个categoryId对应的<SessionId,sessionID>(有可能会重复),<SessionId,sessionID>.join(过滤后得到Session明细数据）
+		  将join后的数据存储到Mysql的session_detail表中
+		  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+		
+		
