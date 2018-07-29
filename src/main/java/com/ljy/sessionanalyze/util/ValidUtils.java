@@ -59,17 +59,17 @@ public class ValidUtils {
 		if(paramFieldValue == null) {
 			return true;
 		}
-		//用户传进来的过滤字段
+		//用户传进来的过滤字段（男装，女装）
 		String[] paramFieldValueSplited = paramFieldValue.split(",");  
 
-		//Session中的数据字段
+		//Session中的数据字段 （男装，不男不女装）
 		String dataFieldValue = StringUtils.getFieldFromConcatString(
 				data, "\\|", dataField);
 		if(dataFieldValue != null) {
 			String[] dataFieldValueSplited = dataFieldValue.split(",");
 			
-			for(String singleDataFieldValue : dataFieldValueSplited) {
-				for(String singleParamFieldValue : paramFieldValueSplited) {
+			for(String singleDataFieldValue/*男装*/ : dataFieldValueSplited) {
+				for(String singleParamFieldValue/*男装*/ : paramFieldValueSplited) {
 					if(singleDataFieldValue.equals(singleParamFieldValue)) {
 						return true;
 					}

@@ -56,8 +56,8 @@ public class PageOnrStepConventRateSpark {
         JavaPairRDD<String, Row> sessionId2ActionRDD = getsession2ActionRDD(actionRDD);
         sessionId2ActionRDD = sessionId2ActionRDD.cache();
 
-        //因为需要拿到每个SessionId对应的行为数据,蔡恒生成切片
-        //所有需要对Session粒度的基础数据进行分组
+        //因为需要拿到每个SessionId对应的行为数据,才能生成切片
+        //所以需要对Session粒度的基础数据进行分组
         final JavaPairRDD<String, Iterable<Row>> session2ActionsRDD = sessionId2ActionRDD.groupByKey();
 
 
@@ -184,7 +184,7 @@ public class PageOnrStepConventRateSpark {
         //获取页面流
         final String targetPageFlow = ParamUtils.getParam(jsonObject, Constants.PARAM_TARGET_PAGE_FLOW);
 
-        //把目标也页面流广播到Executor端,
+        //把目标页面流广播到Executor端,
         final Broadcast<String> targetPageFlowBroadcast = sc.broadcast(targetPageFlow);
 
         return session2ActionsRDD.flatMapToPair((PairFlatMapFunction<Tuple2<String, Iterable<Row>>, String, Integer>) tup -> {
